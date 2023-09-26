@@ -22,7 +22,7 @@ let JOB_CONFIG = {
     timespec: "0 45/15 7-14 * * *",  // repeat every 15 minutes between 8 and 14 o'clock
     func: "run()",                  // entry point for this schedule
     url: "http://wttr.in/%lat%,%lon%?format=j2",  // weather service url
-    url2: "https://api.open-meteo.com/v1/forecast?latitude=%lat%&longitude=%lon%&hourly=temperature_2m,cloudcover&daily=sunrise,sunset&current_weather=true&timeformat=unixtime&timezone=%timezone%&forecast_days=1",
+    url2: "https://api.open-meteo.com/v1/forecast?latitude=%lat%&longitude=%lon%&hourly=temperature_2m,cloudcover,cloudcover_low,cloudcover_mid,cloudcover_high&daily=sunrise,sunset&current_weather=true&timeformat=unixtime&timezone=%timezone%&forecast_days=1",
     min_temperature: 8,            // activate sun-protection, only if temprature is greater than
     max_cloudcover: 20,              // cloud coverage which shall activate protection,
     cover_pos_normal: 100,          // cover position for cloudy days (100: fully open, 0: fully closed)
@@ -40,6 +40,33 @@ let JOB_CONFIG_FINALIZE = {
 };
 
 //////////////////////////////////////// functions ////////////////////////////////////////////////
+
+let cover = {
+    state: null,
+    last_direction: null,
+    current_pos: null,
+};
+
+let weather = {
+    temp: null,
+    cloudcover: null,
+    is_day: null,
+    localObsDateTime: null,
+    requestTime: null,
+};
+
+function getCoverStatus() {
+    Shelly.call("Cover.GetStatus", {id:0}, function(result) {
+        //print("status ", result);
+        cover.state = result.state;
+        cover.last_direction = result.last_direction;
+        cover.current_pos = result.current_pos;
+        print("cover", cover);
+    }
+    );
+}
+
+
 function log(message) {
     let date = Date();
     console.log(date.getHours() + ":" + date.getMinutes(), message);
@@ -154,9 +181,30 @@ function deleteSchedule(config) {
 }
 
 
+function contains(string, substring) {
+    return (string.indexOf(substring) !== -1);
+}
+
+
 function goToPosition(pos) {
+    if (cover.current_pos == pos) {
+         log("No position change needed");
+        return;
+    }
     Shelly.call("Cover.GoToPosition", {id: 0, pos: pos});
 }
+
+
+function moveCoverOnResult(weather) {
+    print("result: ", weather);
+    Shelly.call("KVS.Set", {key: "wttr", value: JSON.stringify(weather)});
+
+    if (weather.temp > JOB_CONFIG.min_temperature && weather.cloudcover < JOB_CONFIG.max_cloudcover) {
+        goToPosition(JOB_CONFIG.cover_pos_sun_protection);
+    } else if (weather.is_day == null || weather.is_day == 1) {
+        goToPosition(JOB_CONFIG.cover_pos_normal);
+    }
+};
 
 
 function parsewttr(result) {
@@ -167,55 +215,35 @@ function parsewttr(result) {
     }
     log("wttr response received: " + result.code);
     var data = JSON.parse(result.body);
-    let wttrResult = {
-        cloudcover: data.current_condition[0].cloudcover,
-        temp: data.current_condition[0].temp_C,
-        localObsDateTime: data.current_condition[0].localObsDateTime,
-        requestTime: Date(),
-    };
-    print("wttrResult: ", wttrResult);
+    weather.cloudcover = data.current_condition[0].cloudcover;
+    weather.temp = data.current_condition[0].temp_C;
+    weather.localObsDateTime = data.current_condition[0].localObsDateTime;
+    weather.requestTime = Date();
+    print("weather: ", weather);
 
-    Shelly.call("KVS.Set", {
-        key: "wttr",
-        value: JSON.stringify(wttrResult),
-    });
-    if (wttrResult.temp > JOB_CONFIG.min_temperature
-        && wttrResult.cloudcover < JOB_CONFIG.max_cloudcover) {
-        goToPosition(JOB_CONFIG.cover_pos_sun_protection);
-    } else {
-        goToPosition(JOB_CONFIG.cover_pos_normal);
-    }
+    moveCoverOnResult(weather);
 };
 
 
-function parsewttr2(result) {
+function parseOpenMeteo(result) {
     if (result == null || result.code != 200) {
         log(result);
         return;
     }
-    log("wttr response received: " + result.code);
-    var data = JSON.parse(result.body);
-    print(data);
+    log("OpenMeteo response received: " + result.code);
+    let data = JSON.parse(result.body);
+    //print(data);
     let now = Date();
     let hour = now.getHours();
-    let result = {
-        //cloudcover_hourly: data.hourly.cloudcover,
-        //temperature_hourly: data.hourly.temperature_2m,
-        temp: data.current_weather.temperature,
-        cloudcover: data.hourly.cloudcover[hour],
-        is_day: data.current_weather.is_day,
-        localObsDateTime: data.current_weather.time,
-        requestTime: now,
-    };
-    print("result: ", result);
-    Shelly.call("KVS.Set", {key: "wttr", value: JSON.stringify(result)});
 
-    if (result.temp > JOB_CONFIG.min_temperature
-        && result.cloudcover < JOB_CONFIG.max_cloudcover) {
-        goToPosition(JOB_CONFIG.cover_pos_sun_protection);
-    } else if (result.is_day == 1) {
-        goToPosition(JOB_CONFIG.cover_pos_normal);
-    }
+    weather.temp = data.current_weather.temperature;
+    weather.cloudcover = data.hourly.cloudcover_high[hour];
+    weather.is_day = data.current_weather.is_day;
+    weather.localObsDateTime = data.current_weather.time;
+    weather.requestTime = now;
+
+    moveCoverOnResult(weather);
+
 };
 
 
@@ -237,19 +265,9 @@ function runAtSunset() {
 
 
 //Actual task that is to be run periodically
-function run2() {
-    log("running weather check.");
-
-    let config = Shelly.getComponentConfig("sys");
-    print(config);
-    let url = JOB_CONFIG.url.replace("%lat%", config.location.lat);
-    url = url.replace("%lon%", config.location.lon);
-    print(url);
-    Shelly.call("HTTP.GET", {"url": url}, parsewttr);
-};
-
-
 function run() {
+    getCoverStatus();
+
     log("running weather check.");
 
     let config = Shelly.getComponentConfig("sys");
@@ -258,7 +276,11 @@ function run() {
     url = url.replace("%lon%", config.location.lon);
     url = url.replace("%timezone%", config.location.tz);
 
-    Shelly.call("HTTP.GET", {"url": url}, parsewttr2);
+    let func = parseOpenMeteo;
+    if (contains(url, "wttr.in")) {
+        func = parsewttr;
+    }
+    Shelly.call("HTTP.GET", {"url": url}, func);
 };
 
 
@@ -292,8 +314,12 @@ let JOB_CONFIG_SUNSET = {
 //deleteSchedule(JOB_CONFIG_FINALIZE);
 
 // register all schedules
-registerIfNotRegistered(JOB_CONFIG_SUNRISE, /*enable=*/true);
-registerIfNotRegistered(JOB_CONFIG_SUNSET, /*enable=*/true);
-registerIfNotRegistered(JOB_CONFIG, /*enable=*/true);
-registerIfNotRegistered(JOB_CONFIG_FINALIZE, /*enable=*/true);
+function register() {
+    registerIfNotRegistered(JOB_CONFIG_SUNRISE, /*enable=*/true);
+    registerIfNotRegistered(JOB_CONFIG_SUNSET, /*enable=*/true);
+    registerIfNotRegistered(JOB_CONFIG, /*enable=*/true);
+    registerIfNotRegistered(JOB_CONFIG_FINALIZE, /*enable=*/true);
+}
 
+register();
+// run();
