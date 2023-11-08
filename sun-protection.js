@@ -1,7 +1,7 @@
 // Dynamic sun protection
 //
 // This script closes the covers according to the current weather conditions which
-// are retrievend from the wttr.in weather api for the current location. It uses four schedules:
+// are retrieved from the wttr.in weather api for the current location. It uses four schedules:
 //
 // 1. Sunrise: Activates the periodic task
 // 2. Periodc task which checks weather condition
