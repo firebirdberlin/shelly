@@ -12,7 +12,17 @@ function cycle(request, response) {
     "HTTP.GET", {
       "url": config.url,
     },
-    function(result) {
+    function(result, error_code, error_message) {
+
+      if (error_code !== 0) {
+        print("Error: ", error_message);
+        if (response) {
+          response.code = 404;
+          response.send();
+        }
+        return;
+      }
+
       let data = JSON.parse(result.body);
       let url = config.url;
       if (data.ison) {
