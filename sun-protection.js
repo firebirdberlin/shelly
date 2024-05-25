@@ -199,6 +199,13 @@ function moveCoverOnResult(weather) {
     print("result: ", weather);
     Shelly.call("KVS.Set", {key: "wttr", value: JSON.stringify(weather)});
 
+    // check button up state; if button is up, don't move at all
+    let state = Shelly.getComponentStatus('input', 0);
+    if (state['state'] == true) {
+        print("button up is true; skipping");
+        return;
+    }
+
     if (weather.temp > JOB_CONFIG.min_temperature && weather.cloudcover < JOB_CONFIG.max_cloudcover) {
         goToPosition(JOB_CONFIG.cover_pos_sun_protection);
     } else if (weather.is_day == null || weather.is_day == 1) {
